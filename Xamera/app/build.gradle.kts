@@ -55,11 +55,8 @@ android {
             pickFirsts.add("lib/armeabi-v7a/libtensorflowlite_gpu_jni.so")
         }
     }
-
-    aaptOptions {
-        noCompress("pt")
-        noCompress("torchscript")
-        noCompress("tflite")
+    androidResources {
+        noCompress += listOf("tflite")
     }
 }
 
