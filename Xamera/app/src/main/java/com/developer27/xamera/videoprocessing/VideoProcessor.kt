@@ -43,7 +43,7 @@ class VideoProcessor {
     }
 
     fun setInterpreter(model: Interpreter) {
-        synchronized(this) { tfliteInterpreter = model }
+        tfliteInterpreter = model
         Log.d("VideoProcessor", "TFLite model set successfully.")
     }
 
@@ -56,6 +56,7 @@ class VideoProcessor {
 
     fun close() {
         scope.cancel()
+        kalmanHelper.close()
     }
 
     fun processFrame(bitmap: Bitmap, callback: (Pair<Bitmap, Bitmap>?) -> Unit) {
@@ -109,7 +110,7 @@ class VideoProcessor {
     }
 
     private suspend fun processFrameYolo(bitmap: Bitmap): Pair<Bitmap, Bitmap> =
-        withContext(Dispatchers.IO) {
+        withContext(Dispatchers.Default) {
             val dims = getModelDimensions()
             val letterbox = YOLOHelper.createLetterboxedBitmap(bitmap, dims.inputWidth, dims.inputHeight)
             val frameMat = Mat()
@@ -245,7 +246,7 @@ class VideoProcessor {
     private fun computeTraceBounds(points: List<Point>): TraceBounds? {
         if (points.isEmpty()) return null
         var minX = Double.MAX_VALUE; var minY = Double.MAX_VALUE
-        var maxX = Double.MIN_VALUE; var maxY = Double.MIN_VALUE
+        var maxX = -Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
         for (pt in points) {
             minX = min(minX, pt.x); minY = min(minY, pt.y)
             maxX = max(maxX, pt.x); maxY = max(maxY, pt.y)

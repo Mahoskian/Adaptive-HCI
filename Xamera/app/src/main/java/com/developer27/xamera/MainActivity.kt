@@ -46,6 +46,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 class MainActivity : AppCompatActivity() {
@@ -61,10 +67,11 @@ class MainActivity : AppCompatActivity() {
     private var processedFrameRecorder: ProcessedFrameRecorder? = null
     private var videoProcessor: VideoProcessor? = null
 
+    private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
     private var isRecording = false
     private var isProcessing = false
     private var isProcessingFrame = false
-    private var inferenceResult = ""
     private var trackingCoordinates: String = ""
     var isLetterSelected = true
     private var isWriting = false
@@ -80,6 +87,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val SETTINGS_REQUEST_CODE = 1
+        private val MIXED_ALPHA_DIGIT_REGEX = Regex("^(?=.*[A-Za-z])(?=.*\\d).+$")
+        private val DIGITS_ONLY_REGEX = Regex("\\d+")
         private val ORIENTATIONS = SparseIntArray().apply {
             append(Surface.ROTATION_0, 90)
             append(Surface.ROTATION_90, 0)
@@ -215,7 +224,7 @@ class MainActivity : AppCompatActivity() {
             viewBinding.startWritingButton.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.green)
             val prediction = viewBinding.predictedLetterTextView.text.toString()
-            if (prediction.matches(Regex("^(?=.*[A-Za-z])(?=.*\\d).+$")) || isLetterSelected) {
+            if (prediction.matches(MIXED_ALPHA_DIGIT_REGEX) || isLetterSelected) {
                 AlertDialog.Builder(this)
                     .setTitle("Send Email")
                     .setMessage("Do you wish to send an email with the text: $prediction?")
@@ -223,7 +232,7 @@ class MainActivity : AppCompatActivity() {
                     .setNegativeButton("No") { _, _ -> launch3DActivity() }
                     .show()
             } else {
-                if (prediction.matches(Regex("\\d+"))) {
+                if (prediction.matches(DIGITS_ONLY_REGEX)) {
                     AlertDialog.Builder(this)
                         .setTitle("Call Number")
                         .setMessage("Do you wish to call the number $prediction?")
@@ -277,26 +286,43 @@ class MainActivity : AppCompatActivity() {
         processedVideoRecorder?.stop()
         processedVideoRecorder = null
 
-        if (Settings.ExportData.frameIMG) {
-            val outputPath = get28x28OutputPath()
-            processedFrameRecorder = ProcessedFrameRecorder(outputPath)
-            videoProcessor?.exportTraceForInference()?.let { processedFrameRecorder?.save(it) }
+        val processor = videoProcessor ?: return
+        val isLetter = isLetterSelected
+        val interpreter = if (isLetter) letterInterpreter else tfliteInterpreter
+        val writing = isWriting
+
+        mainScope.launch {
+            // Compute the trace bitmap once — used for both export and inference
+            val traceBitmap = withContext(Dispatchers.Default) { processor.exportTraceForInference() }
+
+            if (Settings.ExportData.frameIMG) {
+                withContext(Dispatchers.IO) {
+                    ProcessedFrameRecorder(get28x28OutputPath()).save(traceBitmap)
+                }
+            }
+
+            val result: String? = if (interpreter != null) {
+                withContext(Dispatchers.Default) {
+                    val outputSize = if (isLetter) 26 else 10
+                    val label: (Int) -> String = if (isLetter) { i -> ('A' + i).toString() } else Int::toString
+                    runInference(interpreter, traceBitmap, outputSize, label)
+                }
+            } else null
+
+            val displayResult = result ?: "?"
+            val coords = processor.getTrackingCoordinatesString()
+            trackingCoordinates = coords
+
+            if (writing) {
+                if (coords.isNotEmpty()) accumulateCoordinates(coords)
+                val currentText = viewBinding.predictedLetterTextView.text.toString()
+                viewBinding.predictedLetterTextView.text =
+                    if (currentText == "No Prediction Available Yet") displayResult
+                    else currentText + displayResult
+            } else {
+                viewBinding.predictedLetterTextView.text = displayResult
+            }
         }
-
-        initializeInferenceResult()
-
-        if (isWriting) {
-            val currentCoords = videoProcessor?.getTrackingCoordinatesString() ?: ""
-            if (currentCoords.isNotEmpty()) accumulateCoordinates(currentCoords)
-            val currentText = viewBinding.predictedLetterTextView.text.toString()
-            viewBinding.predictedLetterTextView.text =
-                if (currentText == "No Prediction Available Yet") inferenceResult
-                else currentText + inferenceResult
-        } else {
-            viewBinding.predictedLetterTextView.text = inferenceResult
-        }
-
-        trackingCoordinates = videoProcessor?.getTrackingCoordinatesString() ?: ""
     }
 
     private fun accumulateCoordinates(newCoords: String) {
@@ -332,25 +358,18 @@ class MainActivity : AppCompatActivity() {
         return File(dir, "DrawnLine_28x28_${System.currentTimeMillis()}.png").absolutePath
     }
 
-    private fun initializeInferenceResult() {
-        inferenceResult = if (isLetterSelected) runLetterRecognitionInference()
-        else runDigitRecognitionInference()
+    private fun runInference(interpreter: Interpreter, bitmap: Bitmap, outputSize: Int, indexToLabel: (Int) -> String): String? {
+        return try {
+            val buffer = convertBitmapToGrayscaleByteBuffer(convertToGrayscale(bitmap))
+            val output = Array(1) { FloatArray(outputSize) }
+            interpreter.run(buffer, output)
+            val idx = output[0].indices.maxByOrNull { output[0][it] } ?: return null
+            indexToLabel(idx)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Inference failed: ${e.message}")
+            null
+        }
     }
-
-    private fun runInference(interpreter: Interpreter?, outputSize: Int, indexToLabel: (Int) -> String): String {
-        val bitmap = videoProcessor?.exportTraceForInference() ?: return "Error"
-        val buffer = convertBitmapToGrayscaleByteBuffer(convertToGrayscale(bitmap))
-        val output = Array(1) { FloatArray(outputSize) }
-        interpreter?.run(buffer, output) ?: return "Error"
-        val idx = output[0].indices.maxByOrNull { output[0][it] } ?: return "Error"
-        return indexToLabel(idx)
-    }
-
-    private fun runDigitRecognitionInference() =
-        runInference(tfliteInterpreter, 10) { it.toString() }
-
-    private fun runLetterRecognitionInference() =
-        runInference(letterInterpreter, 26) { ('A' + it).toString() }
 
     private fun convertToGrayscale(bitmap: Bitmap): Bitmap {
         val out = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
@@ -521,6 +540,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        mainScope.cancel()
         videoProcessor?.close()
         videoProcessor = null
         super.onDestroy()

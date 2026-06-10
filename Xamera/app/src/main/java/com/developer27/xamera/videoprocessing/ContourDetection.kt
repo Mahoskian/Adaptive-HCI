@@ -9,7 +9,7 @@ import kotlin.math.min
 
 object ContourDetection {
 
-    fun processContourDetection(mat: Mat): MutableList<Rect> {
+    fun processContourDetection(mat: Mat): List<Rect> {
         val contours = findContours(mat)
         val rois = contours.map { Imgproc.boundingRect(it) }.toMutableList()
         return mergeCloseRois(rois)
