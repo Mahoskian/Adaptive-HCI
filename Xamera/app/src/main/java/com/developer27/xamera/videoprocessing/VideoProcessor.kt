@@ -25,6 +25,16 @@ import kotlin.math.sqrt
 
 class VideoProcessor {
 
+    companion object {
+        init {
+            try {
+                System.loadLibrary("opencv_java4")
+            } catch (e: UnsatisfiedLinkError) {
+                Log.d("VideoProcessor", "OpenCV failed to load: ${e.message}", e)
+            }
+        }
+    }
+
     @Volatile private var tfliteInterpreter: Interpreter? = null
 
     private val listLock = Any()
@@ -33,14 +43,6 @@ class VideoProcessor {
 
     private val kalmanHelper = KalmanHelper()
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-
-    init {
-        try {
-            System.loadLibrary("opencv_java4")
-        } catch (e: UnsatisfiedLinkError) {
-            Log.d("VideoProcessor", "OpenCV failed to load: ${e.message}", e)
-        }
-    }
 
     fun setInterpreter(model: Interpreter) {
         tfliteInterpreter = model

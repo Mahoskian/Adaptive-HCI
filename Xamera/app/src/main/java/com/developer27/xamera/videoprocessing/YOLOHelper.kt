@@ -145,7 +145,7 @@ object YOLOHelper {
         Core.copyMakeBorder(resized, letterboxed, top, bottom, left, right, Core.BORDER_CONSTANT, padColor)
         resized.release()
 
-        val outputBitmap = Bitmap.createBitmap(letterboxed.cols(), letterboxed.rows(), srcBitmap.config)
+        val outputBitmap = Bitmap.createBitmap(letterboxed.cols(), letterboxed.rows(), srcBitmap.config ?: Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(letterboxed, outputBitmap)
         letterboxed.release()
 
